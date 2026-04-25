@@ -51,6 +51,7 @@ import {
 // ---------------------------------------------------------------------------
 const EXPERIMENT_MAX_LINES = 10;
 const EXPERIMENT_MAX_BYTES = 4 * 1024; // 4KB
+export const AUTORESEARCH_BRANCH = "autoresearch";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -153,6 +154,20 @@ interface AutoresearchRuntime {
   /** Resume message to send when the pending timer fires. */
   pendingResumeMessage: string | null;
 }
+
+type ExecResult = {
+  code: number;
+  stdout: string;
+  stderr: string;
+};
+
+type GitExecutor = {
+  exec(
+    command: string,
+    args: string[],
+    options: { cwd: string; timeout: number }
+  ): Promise<ExecResult>;
+};
 
 // ---------------------------------------------------------------------------
 // Tool Schemas
@@ -556,6 +571,56 @@ const autoresearchIdeasPath  = (dir: string) => path.join(dir, "autoresearch.ide
 const autoresearchChecksPath = (dir: string) => path.join(dir, "autoresearch.checks.sh");
 const autoresearchScriptPath = (dir: string) => path.join(dir, "autoresearch.sh");
 const autoresearchConfigPath = (dir: string) => path.join(dir, "autoresearch.config.json");
+
+function gitOutput(result: ExecResult): string {
+  return (result.stdout + result.stderr).trim();
+}
+
+function branchFailureMessage(action: "create" | "switch", result: ExecResult): string {
+  const output = gitOutput(result);
+  const details = output ? `\n\n${output.slice(0, 500)}` : "";
+  const conflictHint = output.includes("cannot lock ref")
+    ? `\n\nGit cannot create "${AUTORESEARCH_BRANCH}" while branches like "${AUTORESEARCH_BRANCH}/..." exist. Rename or delete those branches first.`
+    : "";
+  return `Failed to ${action} Git branch "${AUTORESEARCH_BRANCH}" (exit ${result.code}).${details}${conflictHint}`;
+}
+
+export async function ensureAutoresearchBranch(
+  pi: GitExecutor,
+  workDir: string
+): Promise<{ ok: true; action: "already_on" | "switched" | "created" } | { ok: false; message: string }> {
+  const options = { cwd: workDir, timeout: 10_000 };
+  const insideGit = await pi.exec("git", ["rev-parse", "--is-inside-work-tree"], options);
+
+  if (insideGit.code !== 0) {
+    const output = gitOutput(insideGit);
+    return {
+      ok: false,
+      message: `Autoresearch requires a Git worktree before it can start.${output ? `\n\n${output.slice(0, 500)}` : ""}`,
+    };
+  }
+
+  const current = await pi.exec("git", ["branch", "--show-current"], options);
+  if (current.code === 0 && current.stdout.trim() === AUTORESEARCH_BRANCH) {
+    return { ok: true, action: "already_on" };
+  }
+
+  const exists = await pi.exec("git", ["show-ref", "--verify", "--quiet", `refs/heads/${AUTORESEARCH_BRANCH}`], options);
+  if (exists.code === 0) {
+    const switched = await pi.exec("git", ["switch", AUTORESEARCH_BRANCH], options);
+    if (switched.code !== 0) {
+      return { ok: false, message: branchFailureMessage("switch", switched) };
+    }
+    return { ok: true, action: "switched" };
+  }
+
+  const created = await pi.exec("git", ["switch", "-c", AUTORESEARCH_BRANCH], options);
+  if (created.code !== 0) {
+    return { ok: false, message: branchFailureMessage("create", created) };
+  }
+
+  return { ok: true, action: "created" };
+}
 
 function findBaselineRunNumber(results: ExperimentResult[], segment: number): number | null {
   const index = results.findIndex((result) => result.segment === segment);
@@ -3031,10 +3096,16 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         return;
       }
 
+      const workDir = resolveWorkDir(ctx.cwd);
+      const branchResult = await ensureAutoresearchBranch(pi, workDir);
+      if (!branchResult.ok) {
+        ctx.ui.notify(branchResult.message, "error");
+        return;
+      }
+
       runtime.autoresearchMode = true;
       runtime.autoResumeTurns = 0;
 
-      const workDir = resolveWorkDir(ctx.cwd);
       const rulesLoaded = hasAutoresearchRules(ctx);
       const kickoff = rulesLoaded
         ? `Autoresearch mode active. ${trimmedArgs} ${BENCHMARK_GUARDRAIL}`

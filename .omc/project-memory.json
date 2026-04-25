@@ -1,0 +1,147 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1777059232839,
+  "projectRoot": "C:\\Users\\rdpuser\\Documents\\Projects\\pi-autoresearch",
+  "techStack": {
+    "languages": [
+      {
+        "name": "JavaScript/TypeScript",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "package.json"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "pnpm",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "assets",
+      "docs",
+      "tests"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "assets": {
+      "path": "assets",
+      "purpose": "Static assets",
+      "fileCount": 2,
+      "lastAccessed": 1777059232821,
+      "keyFiles": [
+        "logo.webp",
+        "template.html"
+      ]
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 0,
+      "lastAccessed": 1777059232826,
+      "keyFiles": []
+    },
+    "extensions": {
+      "path": "extensions",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1777059232826,
+      "keyFiles": []
+    },
+    "skills": {
+      "path": "skills",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1777059232826,
+      "keyFiles": []
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 12,
+      "lastAccessed": 1777059232826,
+      "keyFiles": [
+        "announce-tool.test.mjs",
+        "branch.test.mjs",
+        "config.test.mjs",
+        "dashboard-files.test.mjs",
+        "decision.test.mjs"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "extensions\\pi-autoresearch\\harness.ts",
+      "accessCount": 65,
+      "lastAccessed": 1777082464607,
+      "type": "file"
+    },
+    {
+      "path": "extensions\\pi-autoresearch\\index.ts",
+      "accessCount": 54,
+      "lastAccessed": 1777082754933,
+      "type": "directory"
+    },
+    {
+      "path": "extensions\\pi-autoresearch\\iter-prompt.ts",
+      "accessCount": 14,
+      "lastAccessed": 1777081359251,
+      "type": "file"
+    },
+    {
+      "path": "package.json",
+      "accessCount": 1,
+      "lastAccessed": 1777059274610,
+      "type": "file"
+    },
+    {
+      "path": "extensions\\pi-autoresearch\\config.ts",
+      "accessCount": 1,
+      "lastAccessed": 1777059315697,
+      "type": "file"
+    },
+    {
+      "path": "extensions\\pi-autoresearch\\memory.ts",
+      "accessCount": 1,
+      "lastAccessed": 1777059323281,
+      "type": "file"
+    },
+    {
+      "path": "extensions\\pi-autoresearch\\iter-log.ts",
+      "accessCount": 1,
+      "lastAccessed": 1777059346643,
+      "type": "file"
+    },
+    {
+      "path": "tests\\harness.test.mjs",
+      "accessCount": 1,
+      "lastAccessed": 1777059485987,
+      "type": "file"
+    },
+    {
+      "path": "extensions\\pi-autoresearch",
+      "accessCount": 1,
+      "lastAccessed": 1777068817078,
+      "type": "directory"
+    }
+  ],
+  "userDirectives": []
+}
