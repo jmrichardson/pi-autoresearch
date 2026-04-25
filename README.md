@@ -194,7 +194,9 @@ Create `autoresearch.config.json` in your pi session directory to customize beha
 ```json
 {
   "workingDir": "/path/to/project",
-  "maxIterations": 50
+  "maxIterations": 50,
+  "iterationTimeoutSeconds": 600,
+  "maxAutoResumeTurns": 20
 }
 ```
 
@@ -202,6 +204,8 @@ Create `autoresearch.config.json` in your pi session directory to customize beha
 |-------|------|-------------|
 | `workingDir` | string | Override the directory for all autoresearch operations — file I/O, command execution, and git. Supports absolute or relative paths (resolved against the pi session cwd). The config file itself always stays in the session cwd. Fails if the directory doesn't exist. |
 | `maxIterations` | number | Maximum experiments before auto-stopping. The agent is told to stop and won't run more experiments until a new segment is initialized. |
+| `iterationTimeoutSeconds` | number | Default timeout for each `run_experiment` call when the agent does not pass `timeout_seconds`. Defaults to 600. |
+| `maxAutoResumeTurns` | number \| null | Maximum automatic resume prompts after agent turns end. Defaults to 20. Set to `0` or `null` for unlimited auto-resume. |
 
 ---
 

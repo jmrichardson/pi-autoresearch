@@ -52,6 +52,8 @@ import {
 const EXPERIMENT_MAX_LINES = 10;
 const EXPERIMENT_MAX_BYTES = 4 * 1024; // 4KB
 export const AUTORESEARCH_BRANCH = "autoresearch";
+export const DEFAULT_EXPERIMENT_TIMEOUT_SECONDS = 600;
+export const DEFAULT_MAX_AUTORESUME_TURNS = 20;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -489,6 +491,8 @@ function currentResults(results: ExperimentResult[], segment: number): Experimen
 
 interface AutoresearchConfig {
   maxIterations?: number;
+  iterationTimeoutSeconds?: number;
+  maxAutoResumeTurns?: number | null;
   workingDir?: string;
 }
 
@@ -509,6 +513,22 @@ function readMaxExperiments(cwd: string): number | null {
   return (typeof config.maxIterations === "number" && config.maxIterations > 0)
     ? Math.floor(config.maxIterations)
     : null;
+}
+
+function positiveIntegerOrNull(value: unknown): number | null {
+  return (typeof value === "number" && Number.isFinite(value) && value > 0)
+    ? Math.floor(value)
+    : null;
+}
+
+export function readIterationTimeoutSeconds(cwd: string): number | null {
+  return positiveIntegerOrNull(readConfig(cwd).iterationTimeoutSeconds);
+}
+
+export function readMaxAutoResumeTurns(cwd: string): number | null {
+  const value = readConfig(cwd).maxAutoResumeTurns;
+  if (value === null || value === 0) return null;
+  return positiveIntegerOrNull(value) ?? DEFAULT_MAX_AUTORESUME_TURNS;
 }
 
 /**
@@ -571,6 +591,7 @@ const autoresearchIdeasPath  = (dir: string) => path.join(dir, "autoresearch.ide
 const autoresearchChecksPath = (dir: string) => path.join(dir, "autoresearch.checks.sh");
 const autoresearchScriptPath = (dir: string) => path.join(dir, "autoresearch.sh");
 const autoresearchConfigPath = (dir: string) => path.join(dir, "autoresearch.config.json");
+const autoresearchResumePath = (dir: string) => path.join(dir, "autoresearch.resume.json");
 
 function gitOutput(result: ExecResult): string {
   return (result.stdout + result.stderr).trim();
@@ -620,6 +641,38 @@ export async function ensureAutoresearchBranch(
   }
 
   return { ok: true, action: "created" };
+}
+
+function persistResumeRequest(workDir: string, reason: string, message: string): void {
+  const payload = {
+    type: "resume",
+    reason,
+    message,
+    timestamp: Date.now(),
+  };
+  fs.writeFileSync(autoresearchResumePath(workDir), JSON.stringify(payload, null, 2) + "\n");
+}
+
+function readPersistedResumeMessage(workDir: string): string | null {
+  const resumePath = autoresearchResumePath(workDir);
+  if (!fs.existsSync(resumePath)) return null;
+
+  try {
+    const payload = JSON.parse(fs.readFileSync(resumePath, "utf-8"));
+    return typeof payload.message === "string" && payload.message.trim()
+      ? payload.message
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function clearPersistedResumeRequest(workDir: string): void {
+  try {
+    fs.rmSync(autoresearchResumePath(workDir), { force: true });
+  } catch {
+    // Best effort only.
+  }
 }
 
 function findBaselineRunNumber(results: ExperimentResult[], segment: number): number | null {
@@ -1090,7 +1143,6 @@ function renderDashboardLines(
 // ---------------------------------------------------------------------------
 
 export default function autoresearchExtension(pi: ExtensionAPI) {
-  const MAX_AUTORESUME_TURNS = 20;
   const AUTORESUME_COOLDOWN_MS = 5 * 60 * 1000;
   const BENCHMARK_GUARDRAIL =
     "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.";
@@ -1135,7 +1187,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return;
     }
     if (!isAgentSettled(ctx)) return;
-    if (hasReachedAutoResumeLimit(runtime)) {
+    if (hasReachedAutoResumeLimit(ctx, runtime)) {
       cancelPendingResume(runtime);
       notifyAutoResumeLimitReached(ctx);
       return;
@@ -1143,6 +1195,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     if (isWithinAutoResumeCooldown(runtime)) return;
 
     cancelPendingResume(runtime);
+    clearPersistedResumeRequest(resolveWorkDir(ctx.cwd));
     markAutoResumeSent(runtime);
     pi.sendUserMessage(message);
   };
@@ -1174,12 +1227,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     return true;
   };
 
-  const hasReachedAutoResumeLimit = (runtime: AutoresearchRuntime): boolean =>
-    runtime.autoResumeTurns >= MAX_AUTORESUME_TURNS;
+  const hasReachedAutoResumeLimit = (ctx: ExtensionContext, runtime: AutoresearchRuntime): boolean => {
+    const limit = readMaxAutoResumeTurns(ctx.cwd);
+    return limit !== null && runtime.autoResumeTurns >= limit;
+  };
 
   const notifyAutoResumeLimitReached = (ctx: ExtensionContext): void => {
+    const limit = readMaxAutoResumeTurns(ctx.cwd);
     ctx.ui.notify(
-      `Autoresearch auto-resume limit reached (${MAX_AUTORESUME_TURNS} turns)`,
+      `Autoresearch auto-resume limit reached (${limit ?? "unlimited"} turns)`,
       "info",
     );
   };
@@ -1187,9 +1243,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const hasIdeasFile = (ctx: ExtensionContext): boolean =>
     fs.existsSync(autoresearchIdeasPath(resolveWorkDir(ctx.cwd)));
 
-  const composeResumeMessage = (ctx: ExtensionContext): string => {
+  const composeResumeMessage = (ctx: ExtensionContext, reason = "Autoresearch loop ended"): string => {
     const parts = [
-      "Autoresearch loop ended (likely context limit). Resume the experiment loop — read autoresearch.md and git log for context.",
+      `${reason}. Resume the experiment loop — read autoresearch.md and git log for context.`,
     ];
     if (hasIdeasFile(ctx)) {
       parts.push("Check autoresearch.ideas.md for promising paths to explore. Prune stale/tried ideas.");
@@ -1361,6 +1417,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
     runtime.autoresearchMode = fs.existsSync(autoresearchJsonlPath(workDir));
 
     updateWidget(ctx);
+
+    if (runtime.autoresearchMode) {
+      const persistedResume = readPersistedResumeMessage(workDir);
+      if (persistedResume) schedulePendingResume(ctx, runtime, persistedResume);
+    }
   };
 
   const updateWidget = (ctx: ExtensionContext) => {
@@ -1561,7 +1622,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return;
     }
     if (!shouldAutoResume(runtime)) return;
-    if (hasReachedAutoResumeLimit(runtime)) {
+    if (hasReachedAutoResumeLimit(ctx, runtime)) {
       notifyAutoResumeLimitReached(ctx);
       return;
     }
@@ -1773,7 +1834,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
       }
 
-      const timeout = (params.timeout_seconds ?? 600) * 1000;
+      const timeout = (params.timeout_seconds ?? readIterationTimeoutSeconds(ctx.cwd) ?? DEFAULT_EXPERIMENT_TIMEOUT_SECONDS) * 1000;
 
       // Guard: if autoresearch.sh exists, only allow running it
       const autoresearchShPath = autoresearchScriptPath(workDir);
@@ -1801,10 +1862,12 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       advanceIterationTracking(runtime, ctx);
       if (isContextExhausted(runtime, ctx)) {
-        runtime.autoresearchMode = false;
+        const resumeMessage = composeResumeMessage(ctx, "Context window reached the autoresearch safety threshold");
+        persistResumeRequest(workDir, "context_exhausted", resumeMessage);
+        schedulePendingResume(ctx, runtime, resumeMessage);
         ctx.abort();
         return {
-          content: [{ type: "text", text: "🛑 Context window almost full. Start a new pi session to continue — all progress is saved." }],
+          content: [{ type: "text", text: "🛑 Context window almost full. Autoresearch mode remains active; a persisted resume request was written and the loop will continue after compaction or session reload." }],
           details: {},
         };
       }
@@ -3046,6 +3109,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         runtime.lastRunDuration = null;
         runtime.runningExperiment = null;
         cancelPendingResume(runtime);
+        clearPersistedResumeRequest(resolveWorkDir(ctx.cwd));
         stopDashboardServer();
         clearSessionUi(ctx);
         if (wasRunning) ctx.abort();
@@ -3062,7 +3126,8 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       }
 
       if (command === "clear") {
-        const jsonlPath = autoresearchJsonlPath(resolveWorkDir(ctx.cwd));
+        const workDir = resolveWorkDir(ctx.cwd);
+        const jsonlPath = autoresearchJsonlPath(workDir);
         runtime.autoresearchMode = false;
         runtime.dashboardExpanded = false;
         runtime.lastAutoResumeTime = 0;
@@ -3071,6 +3136,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         runtime.lastRunChecks = null;
         runtime.runningExperiment = null;
         cancelPendingResume(runtime);
+        clearPersistedResumeRequest(workDir);
         runtime.state = createExperimentState();
         stopDashboardServer();
         updateWidget(ctx);
