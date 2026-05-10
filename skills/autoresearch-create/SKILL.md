@@ -87,13 +87,19 @@ JSON config file that lives in the pi session's working directory (`ctx.cwd`). S
 
 - **`maxIterations`** (number) — maximum experiments before auto-stopping.
 - **`workingDir`** (string) — override the directory for all autoresearch operations: file I/O (`autoresearch.jsonl`, `autoresearch.md`, `autoresearch.sh`, `autoresearch.checks.sh`, `autoresearch.ideas.md`), command execution, and git operations. Supports absolute paths or relative paths (resolved against `ctx.cwd`). The config file itself always stays in `ctx.cwd`. Fails if the directory doesn't exist.
+- **`iterationTimeoutSeconds`** (number) — default timeout for `run_experiment` when the tool call omits `timeout_seconds`.
+- **`maxAutoResumeTurns`** (number or null) — maximum automatic resume prompts after agent turns/compaction. `0` or `null` means unlimited.
 
 ```json
 {
   "workingDir": "/path/to/project",
-  "maxIterations": 50
+  "maxIterations": 50,
+  "iterationTimeoutSeconds": 3600,
+  "maxAutoResumeTurns": 0
 }
 ```
+
+Discarded, crashed, and checks-failed runs revert code changes but preserve `autoresearch.*`, `autoresearch.*/**`, and `experiments/**`. Put durable experiment registries, dashboards, and JSONL ledgers under `experiments/` when they must survive failed attempts.
 
 ### `autoresearch.checks.sh` (optional)
 

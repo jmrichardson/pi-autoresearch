@@ -57,6 +57,21 @@ import { resolveAutoresearchShortcuts } from "./shortcuts.ts";
 // ---------------------------------------------------------------------------
 const EXPERIMENT_MAX_LINES = 10;
 const EXPERIMENT_MAX_BYTES = 4 * 1024; // 4KB
+export const DEFAULT_EXPERIMENT_TIMEOUT_SECONDS = 600;
+export const DEFAULT_MAX_AUTORESUME_TURNS = 20;
+
+const DISCARD_CHECKOUT_EXCLUDES = [
+  ":(exclude,glob)**/autoresearch.*",
+  ":(exclude,glob)**/autoresearch.*/**",
+  ":(exclude,glob)experiments/**",
+] as const;
+
+const DISCARD_CLEAN_EXCLUDES = [
+  "autoresearch.*",
+  "**/autoresearch.*/**",
+  "experiments",
+  "experiments/**",
+] as const;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -430,6 +445,8 @@ function currentResults(results: ExperimentResult[], segment: number): Experimen
 
 interface AutoresearchConfig {
   maxIterations?: number;
+  iterationTimeoutSeconds?: number;
+  maxAutoResumeTurns?: number | null;
   workingDir?: string;
 }
 
@@ -450,6 +467,38 @@ function readMaxExperiments(cwd: string): number | null {
   return (typeof config.maxIterations === "number" && config.maxIterations > 0)
     ? Math.floor(config.maxIterations)
     : null;
+}
+
+function positiveIntegerOrNull(value: unknown): number | null {
+  return (typeof value === "number" && Number.isFinite(value) && value > 0)
+    ? Math.floor(value)
+    : null;
+}
+
+export function readIterationTimeoutSeconds(cwd: string): number | null {
+  return positiveIntegerOrNull(readConfig(cwd).iterationTimeoutSeconds);
+}
+
+export function readMaxAutoResumeTurns(cwd: string): number | null {
+  const value = readConfig(cwd).maxAutoResumeTurns;
+  if (value === null || value === 0) return null;
+  return positiveIntegerOrNull(value) ?? DEFAULT_MAX_AUTORESUME_TURNS;
+}
+
+function shQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+export function buildDiscardRevertScript(): string {
+  const checkoutExcludes = DISCARD_CHECKOUT_EXCLUDES.map(shQuote).join(" ");
+  const cleanExcludes = DISCARD_CLEAN_EXCLUDES
+    .map((pattern) => `-e ${shQuote(pattern)}`)
+    .join(" ");
+
+  return [
+    `git checkout -- . ${checkoutExcludes}`,
+    `git clean -fd ${cleanExcludes} 2>/dev/null`,
+  ].join("\n");
 }
 
 /**
@@ -974,7 +1023,6 @@ function renderDashboardLines(
 // ---------------------------------------------------------------------------
 
 export default function autoresearchExtension(pi: ExtensionAPI) {
-  const MAX_AUTORESUME_TURNS = 20;
   const BENCHMARK_GUARDRAIL =
     "Be careful not to overfit to the benchmarks and do not cheat on the benchmarks.";
 
@@ -1037,7 +1085,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return;
     }
     if (!isAgentSettled(ctx)) return;
-    if (hasReachedAutoResumeLimit(runtime)) {
+    if (hasReachedAutoResumeLimit(ctx, runtime)) {
       cancelPendingResume(runtime);
       notifyAutoResumeLimitReached(ctx);
       return;
@@ -1073,12 +1121,15 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
   const shouldAutoResumeAfterCompact = (runtime: AutoresearchRuntime): boolean =>
     runtime.autoresearchMode;
 
-  const hasReachedAutoResumeLimit = (runtime: AutoresearchRuntime): boolean =>
-    runtime.autoResumeTurns >= MAX_AUTORESUME_TURNS;
+  const hasReachedAutoResumeLimit = (ctx: ExtensionContext, runtime: AutoresearchRuntime): boolean => {
+    const limit = readMaxAutoResumeTurns(ctx.cwd);
+    return limit !== null && runtime.autoResumeTurns >= limit;
+  };
 
   const notifyAutoResumeLimitReached = (ctx: ExtensionContext): void => {
+    const limit = readMaxAutoResumeTurns(ctx.cwd);
     ctx.ui.notify(
-      `Autoresearch auto-resume limit reached (${MAX_AUTORESUME_TURNS} turns)`,
+      `Autoresearch auto-resume limit reached (${limit ?? "unlimited"} turns)`,
       "info",
     );
   };
@@ -1469,7 +1520,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       return;
     }
     if (!gate(runtime)) return;
-    if (hasReachedAutoResumeLimit(runtime)) {
+    if (hasReachedAutoResumeLimit(ctx, runtime)) {
       notifyAutoResumeLimitReached(ctx);
       return;
     }
@@ -1695,7 +1746,11 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
         }
       }
 
-      const timeout = (params.timeout_seconds ?? 600) * 1000;
+      const timeout = (
+        params.timeout_seconds ??
+        readIterationTimeoutSeconds(ctx.cwd) ??
+        DEFAULT_EXPERIMENT_TIMEOUT_SECONDS
+      ) * 1000;
 
       // Guard: if autoresearch.sh exists, only allow running it
       const autoresearchShPath = autoresearchScriptPath(workDir);
@@ -2179,7 +2234,7 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
       "Log experiment result (commit, metric, status, description)",
     promptGuidelines: [
       "Always call log_experiment after run_experiment to record the result.",
-      "log_experiment automatically runs git add -A && git commit on 'keep', and auto-reverts code changes on 'discard'/'crash'/'checks_failed' (autoresearch files are preserved). Do NOT commit or revert manually.",
+      "log_experiment automatically runs git add -A && git commit on 'keep', and auto-reverts code changes on 'discard'/'crash'/'checks_failed' (autoresearch files and experiments/ are preserved). Do NOT commit or revert manually.",
       "Use status 'keep' if the PRIMARY metric improved. 'discard' if worse or unchanged. 'crash' if it failed. Secondary metrics are for monitoring — they almost never affect keep/discard. Only discard a primary improvement if a secondary metric degraded catastrophically, and explain why in the description.",
       "log_experiment reports a confidence score after 3+ runs (best improvement as a multiple of the noise floor). ≥2.0× = likely real, <1.0× = within noise. If confidence is below 1.0×, consider re-running the same experiment to confirm before keeping. The score is advisory — it never auto-discards.",
       "If you discover complex but promising optimizations you won't pursue immediately, append them as bullet points to autoresearch.ideas.md. Don't let good ideas get lost.",
@@ -2409,12 +2464,9 @@ export default function autoresearchExtension(pi: ExtensionAPI) {
 
       if (params.status !== "keep") {
         try {
-          const revertScript = `
-            git checkout -- . ':(exclude,glob)**/autoresearch.*' ':(exclude,glob)**/autoresearch.*/**'
-            git clean -fd -e 'autoresearch.*' -e '**/autoresearch.*/**' 2>/dev/null
-          `;
+          const revertScript = buildDiscardRevertScript();
           await pi.exec("bash", ["-c", revertScript], { cwd: workDir, timeout: 10000 });
-          text += `\n📝 Git: reverted changes (${params.status}) — autoresearch files preserved`;
+          text += `\n📝 Git: reverted changes (${params.status}) — autoresearch and experiments files preserved`;
         } catch (e) {
           text += `\n⚠️ Git revert failed: ${e instanceof Error ? e.message : String(e)}`;
         }
